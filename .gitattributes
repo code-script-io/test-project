@@ -1,0 +1,4 @@
+# Bundled third-party shader strings retain their upstream whitespace.
+docs/index.html -whitespace linguist-generated=true
+release/*.html -whitespace linguist-generated=true
+release/*.zip binary
