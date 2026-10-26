@@ -2,27 +2,28 @@ export type PauseReason='toggle'|'focus'|'pointer';
 export class Input {
   private touchMode:'auto'|'on'|'off'='auto';
   keys=new Set<string>(); pressed=new Set<string>(); dx=0;dy=0;aim=false; fire=false; touch=false;
-  move={x:0,y:0}; look={x:0,y:0}; private leftId=-1;private rightId=-1; private origin={x:0,y:0};private last={x:0,y:0};private dragging=false;
+  move={x:0,y:0}; look={x:0,y:0}; private leftId=-1;private rightId=-1; private origin={x:0,y:0};private last={x:0,y:0};private dragging=false;private dragDistance=0;private pointerUnavailable=false;
   constructor(public canvas: HTMLCanvasElement, public onPause:(reason:PauseReason)=>void) {
     this.setTouchMode('auto');window.addEventListener('pointerdown',e=>{if(e.pointerType==='touch'&&this.touchMode==='auto'){this.touch=true;document.body.classList.add('touch');}},{capture:true});
     window.addEventListener('keydown',e=>{
       if(e.code==='Escape'||(e.code==='KeyP'&&!(e.target instanceof HTMLInputElement))){e.preventDefault();if(!e.repeat)this.onPause('toggle');return;}
       if(e.target instanceof HTMLInputElement||e.target instanceof HTMLSelectElement)return;
       if(['Space','Tab','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code))e.preventDefault();
-      if(!e.repeat)this.pressed.add(e.code);this.keys.add(e.code);
+      if(!e.repeat)this.pressed.add(e.code);if(e.code==='KeyV'&&!e.repeat)this.pressed.add('Fire');this.keys.add(e.code);
     });
     window.addEventListener('keyup',e=>this.keys.delete(e.code));
-    window.addEventListener('mousemove',e=>{if(document.pointerLockElement===canvas||this.dragging){this.dx+=e.movementX;this.dy+=e.movementY;}});
-    canvas.addEventListener('mousedown',e=>{if(document.pointerLockElement!==canvas&&!this.touch){this.dragging=true;this.lock();return;}if(e.button===0){this.fire=true;this.pressed.add('Fire');}if(e.button===2)this.aim=true;});
-    window.addEventListener('mouseup',e=>{this.dragging=false;if(e.button===0)this.fire=false;if(e.button===2)this.aim=false;});
+    window.addEventListener('mousemove',e=>{if(document.pointerLockElement===canvas||this.dragging){this.dx+=e.movementX;this.dy+=e.movementY;if(this.dragging)this.dragDistance+=Math.hypot(e.movementX,e.movementY);}});
+    canvas.addEventListener('mousedown',e=>{if(document.pointerLockElement!==canvas&&!this.touch){this.dragging=e.button===0;this.dragDistance=0;if(e.button===2)this.aim=true;this.lock();return;}if(e.button===0){this.fire=true;this.pressed.add('Fire');}if(e.button===2)this.aim=true;});
+    window.addEventListener('mouseup',e=>{if(e.button===0&&this.dragging&&this.dragDistance<7&&!document.pointerLockElement&&this.pointerUnavailable&&!this.touch)this.pressed.add('Fire');this.dragging=false;if(e.button===0)this.fire=false;if(e.button===2)this.aim=false;});
     window.addEventListener('blur',()=>{this.clear();this.onPause('focus');});
     document.addEventListener('visibilitychange',()=>{if(document.hidden){this.clear();this.onPause('focus');}});
     canvas.addEventListener('contextmenu',e=>e.preventDefault());
     document.addEventListener('pointerlockchange',()=>{this.dragging=false;if(!document.pointerLockElement&&!this.touch)this.onPause('pointer');});
+    document.addEventListener('pointerlockerror',()=>{this.pointerUnavailable=true;});
     this.bindTouch();
   }
   setTouchMode(mode:'auto'|'on'|'off'){this.touchMode=mode;this.touch=mode==='on'||(mode==='auto'&&(navigator.maxTouchPoints>0||matchMedia('(any-pointer: coarse)').matches));document.body.classList.toggle('touch',this.touch);}
-  lock(){if(!this.touch)try{const promise=this.canvas.requestPointerLock();promise?.catch(()=>{});}catch{}}
+  lock(){if(!this.touch)try{const promise=this.canvas.requestPointerLock();promise?.then(()=>{this.pointerUnavailable=false;},()=>{this.pointerUnavailable=true;});}catch{this.pointerUnavailable=true;}}
   down(...codes:string[]){return codes.some(c=>this.keys.has(c));}
   take(code:string){const yes=this.pressed.has(code);this.pressed.delete(code);return yes;}
   clear(){this.keys.clear();this.pressed.clear();this.fire=false;this.aim=false;this.dragging=false;this.dx=this.dy=0;this.leftId=this.rightId=-1;this.move={x:0,y:0};this.look={x:0,y:0};const nub=document.querySelector<HTMLElement>('#touch-move i');if(nub)nub.style.transform='';}

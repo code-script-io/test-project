@@ -1,5 +1,7 @@
 import * as THREE from 'three';
-import { AudioSystem } from './audio';
+import { AudioSystem, type AudioZone } from './audio';
+import { EncounterDirector, RitualPuzzle, REQUIEM, type RitualSave } from './expansion';
+import { HorrorEffects } from './horror';
 import { Enemy } from './ai';
 import { difficulty, normalizeSettings, readSettings, SAVE_KEY, type Settings } from './config';
 import { Input } from './input';
@@ -7,15 +9,15 @@ import { findPath, lineClear, moveCircle, overlaps, supportHeight, vaultClear, t
 import { Rendering } from './rendering';
 import { $, shell, UI, type Mode } from './ui';
 import { World, type Interactable } from './world';
-interface Save { version:1; health:number; ammo:number; reserve:number; battery:number; medkits:number; decoys:number; inventory:string[]; collected:string[]; notes:string[]; power:boolean; time:number; position:Point; yaw?:number; pitch?:number; flashlight?:boolean; crouched?:boolean; }
+interface Save { version:1; health:number; ammo:number; reserve:number; battery:number; medkits:number; decoys:number; inventory:string[]; collected:string[]; notes:string[]; power:boolean; time:number; position:Point; yaw?:number; pitch?:number; flashlight?:boolean; crouched?:boolean; ritual?:RitualSave; encounters?:string[]; }
 export class Game {
-  settings=readSettings();rendering:Rendering;world:World;input:Input;audio=new AudioSystem();ui:UI;enemies:Enemy[]=[];
+  settings=readSettings();rendering:Rendering;world:World;input:Input;audio=new AudioSystem();ui:UI;enemies:Enemy[]=[];ritual=new RitualPuzzle();director=new EncounterDirector();horror:HorrorEffects;private hideAnchor:THREE.Vector3|null=null;private hideKind:'bed'|'locker'|null=null;private enemySteps=new Map<Enemy,number>();private exhausted=false;
   mode:Mode='menu';player=new THREE.Vector3(0,0,8);yaw=0;pitch=0;health=100;stamina=100;battery=100;ammo=6;reserve=18;medkits=1;decoys=3;
   inventory=new Set<string>();collected=new Set<string>();notes=new Set<string>();power=false;time=0;hidden=false;crouched=false;flashlight=true;feet=0;velocityY=0;
   private last=performance.now();private elapsed=0;private stepTime=0;private shotCooldown=0;private reloadTime=0;private flashTime=0;private recoil=0;private invulnerability=0;private messageTime=0;private subtitleTime=0;private grace=12;private tutorialTime=24;private danger=0;private focused:Interactable|null=null;
   private vault:{start:THREE.Vector3;end:THREE.Vector3;t:number;height:number;startFeet:number}|null=null;private raycaster=new THREE.Raycaster();private checkpoints=0;private lookingDirection=new THREE.Vector3();private tmp=new THREE.Vector3();private uiTime=0;
   constructor(){
-    shell();this.rendering=new Rendering(this.settings);this.world=new World(this.rendering.scene);
+    shell();this.rendering=new Rendering(this.settings);this.world=new World(this.rendering.scene);this.horror=new HorrorEffects(this.rendering.scene);
     this.ui=new UI(this.settings,a=>this.action(a),s=>this.applySettings(s));this.input=new Input(this.rendering.renderer.domElement,reason=>{if(reason==='toggle')this.togglePause();else this.pause();});
     document.body.classList.toggle('touch',this.input.touch);this.applySettings(this.settings);this.spawnEnemies();this.ui.show('menu');$('#loading').remove();
     window.addEventListener('beforeunload',()=>{if(this.mode==='playing'||this.mode==='paused')this.save();});
@@ -24,7 +26,7 @@ export class Game {
     requestAnimationFrame(t=>this.frame(t));
   }
   applySettings(s:Settings){s=normalizeSettings(s);this.settings=s;if(this.ui)this.ui.settings=s;this.rendering.apply(s);this.input?.setTouchMode(s.touchControls);this.rendering.render();this.audio.setVolume(s.volume);document.body.classList.toggle('reduced-motion',s.reducedMotion);try{localStorage.setItem('ndz-settings',JSON.stringify(s));}catch{}}
-  spawnEnemies(){this.enemies.forEach(e=>this.rendering.scene.remove(e.mesh));this.enemies=[new Enemy('warden',this.rendering.scene,this.world.boxes,[{x:11,z:-11},{x:0,z:-11},{x:0,z:1},{x:11,z:6},{x:0,z:8},{x:-10,z:4},{x:-10,z:-11},{x:0,z:-25},{x:25,z:-6}]),new Enemy('crawler',this.rendering.scene,this.world.boxes,[{x:-11,z:30},{x:-9,z:20},{x:9,z:32},{x:13,z:20}])];}
+  spawnEnemies(){this.enemySteps.clear();this.enemies.forEach(e=>this.rendering.scene.remove(e.mesh));this.enemies=[new Enemy('warden',this.rendering.scene,this.world.boxes,[{x:11,z:-11},{x:0,z:-11},{x:0,z:1},{x:11,z:6},{x:0,z:8},{x:-10,z:4},{x:-10,z:-11},{x:0,z:-25},{x:25,z:-6},{x:25,z:5}]),new Enemy('crawler',this.rendering.scene,this.world.boxes,[{x:-11,z:30},{x:-9,z:20},{x:9,z:32},{x:13,z:20}])];}
   action(action:string){
     if(action==='new'){this.newGame();return;}
     if(action==='continue'){this.load();return;}
@@ -42,11 +44,11 @@ export class Game {
   togglePause(){if(this.mode==='playing')this.pause();else if(['paused','journal','note','code'].includes(this.mode))this.resume();else if(this.mode==='settings')this.show(this.ui.settingsReturn);else if(this.mode==='controls')this.show('menu');}
   pause(){if(this.mode==='playing'){this.save();this.show('paused');}}
   resume(){this.input.clear();this.mode='playing';this.ui.show('playing');this.audio.start(this.settings.volume);this.input.lock();this.last=performance.now();}
-  newGame(){this.health=100;this.stamina=100;this.battery=100;this.ammo=6;this.reserve=18;this.medkits=1;this.decoys=3;this.inventory.clear();this.collected.clear();this.notes.clear();this.power=false;this.world.setPower(false);this.time=0;this.checkpoints=0;this.resetPlayer();this.world.items.forEach(i=>{i.active=true;i.mesh.visible=!['obstacle'].includes(i.type)&&i.id!=='bed-hide';});this.spawnEnemies();this.tutorialTime=24;$('#tutorial').style.display='';this.resume();this.save();this.caption('[Rain against the windows. Somewhere, metal drags across a floor.]');}
-  resetPlayer(){this.player.set(0,1.68,8);this.stamina=100;this.flashTime=0;this.stepTime=0;this.yaw=0;this.pitch=0;this.hidden=false;this.crouched=false;this.feet=0;this.velocityY=0;this.reloadTime=0;this.shotCooldown=0;this.vault=null;this.flashlight=true;this.grace=12;this.invulnerability=2;this.danger=0;this.recoil=0;}
+  newGame(){this.ritual=new RitualPuzzle();this.director.restore([]);this.horror.reset();this.world.setRitualSolved(false);this.health=100;this.stamina=100;this.battery=100;this.ammo=6;this.reserve=18;this.medkits=1;this.decoys=3;this.inventory.clear();this.collected.clear();this.notes.clear();this.power=false;this.world.setPower(false);this.time=0;this.checkpoints=0;this.resetPlayer();this.world.items.forEach(i=>{i.active=true;i.mesh.visible=!['obstacle'].includes(i.type)&&i.id!=='bed-hide';});this.spawnEnemies();this.tutorialTime=24;$('#tutorial').style.display='';this.resume();this.save();this.caption('[Rain against the windows. Somewhere, metal drags across a floor.]');}
+  resetPlayer(){this.player.set(0,1.68,8);this.stamina=100;this.flashTime=0;this.stepTime=0;this.yaw=0;this.pitch=0;this.hidden=false;this.hideAnchor=null;this.hideKind=null;document.body.classList.remove('in-locker','under-bed');this.exhausted=false;this.crouched=false;this.feet=0;this.velocityY=0;this.reloadTime=0;this.shotCooldown=0;this.vault=null;this.flashlight=true;this.grace=12;this.invulnerability=2;this.danger=0;this.recoil=0;}
   save(){
     if(this.health<=0||this.mode==='won')return;
-    const s:Save={version:1,health:this.health,ammo:this.ammo,reserve:this.reserve,battery:this.battery,medkits:this.medkits,decoys:this.decoys,inventory:[...this.inventory],collected:[...this.collected],notes:[...this.notes],power:this.power,time:this.time,position:{x:this.player.x,z:this.player.z},yaw:this.yaw,pitch:this.pitch,flashlight:this.flashlight,crouched:this.crouched};
+    const s:Save={version:1,health:this.health,ammo:this.ammo,reserve:this.reserve,battery:this.battery,medkits:this.medkits,decoys:this.decoys,inventory:[...this.inventory],collected:[...this.collected],notes:[...this.notes],power:this.power,time:this.time,position:{x:this.player.x,z:this.player.z},yaw:this.yaw,pitch:this.pitch,flashlight:this.flashlight,crouched:this.crouched,ritual:this.ritual.snapshot(),encounters:[...this.director.fired]};
     try{localStorage.setItem(SAVE_KEY,JSON.stringify(s));}catch{this.toast('Checkpoint unavailable: browser storage is full or disabled.');}
   }
   load(){
@@ -55,7 +57,7 @@ export class Game {
       if(s.version!==1||!Array.isArray(s.collected)||!Array.isArray(s.inventory)||!Array.isArray(s.notes))throw Error('Invalid save');
       const n=(v:number,max:number,fallback:number)=>Number.isFinite(v)?Math.min(max,Math.max(0,v)):fallback;
       this.health=Math.max(retry?60:1,n(s.health,100,100));this.ammo=n(s.ammo,6,6);this.reserve=n(s.reserve,180,18);this.battery=Math.max(retry?25:0,n(s.battery,100,100));this.medkits=n(s.medkits,20,1);this.decoys=n(s.decoys,20,3);this.time=n(s.time,86400,0);
-      this.inventory=new Set(s.inventory.filter(i=>['fuse','key','valve'].includes(i)));this.collected=new Set(s.collected.filter(i=>this.world.items.some(w=>w.id===i)));this.notes=new Set(s.notes.filter(i=>this.world.items.some(w=>w.id===i&&w.type==='note')));this.power=!!s.power;this.world.setPower(this.power);this.resetPlayer();if(!retry){this.yaw=Number.isFinite(s.yaw)?s.yaw!:0;this.pitch=Number.isFinite(s.pitch)?THREE.MathUtils.clamp(s.pitch!,-1.4,1.4):0;this.crouched=!!s.crouched;this.flashlight=s.flashlight!==false&&this.battery>0;}
+      this.inventory=new Set(s.inventory.filter(i=>['fuse','key','valve'].includes(i)));this.collected=new Set(s.collected.filter(i=>this.world.items.some(w=>w.id===i)));this.notes=new Set(s.notes.filter(i=>this.world.items.some(w=>w.id===i&&w.type==='note')));this.power=!!s.power;this.world.setPower(this.power);this.ritual.restore(s.ritual);this.world.setRitualSolved(this.ritual.solved);this.director.restore(s.encounters);this.horror.reset();this.resetPlayer();if(!retry){this.yaw=Number.isFinite(s.yaw)?s.yaw!:0;this.pitch=Number.isFinite(s.pitch)?THREE.MathUtils.clamp(s.pitch!,-1.4,1.4):0;this.crouched=!!s.crouched;this.flashlight=s.flashlight!==false&&this.battery>0;}
       // Death resumes in the safe foyer while retaining objective progress and supplies.
       if(this.mode!=='dead'&&s.position&&Number.isFinite(s.position.x)&&Number.isFinite(s.position.z)&&s.position.x>-18&&s.position.x<35&&s.position.z>-34&&s.position.z<42&&!this.world.boxes.some(b=>overlaps(s.position.x,s.position.z,.3,b))){this.player.x=s.position.x;this.player.z=s.position.z;}
       this.world.items.forEach(i=>{i.active=!this.collected.has(i.id);i.mesh.visible=i.active&&i.type!=='obstacle'&&i.id!=='bed-hide';});this.spawnEnemies();this.tutorialTime=0;$('#tutorial').style.display='none';this.resume();this.toast('Checkpoint restored. The hunt begins again.');
@@ -63,38 +65,56 @@ export class Game {
   }
   toast(message:string){this.ui.toast(message);this.messageTime=4;}
   caption(message:string){this.ui.subtitle(message);this.subtitleTime=4;}
+  zone():AudioZone{return this.player.z>14?'forest':this.player.z<-18?'tunnel':this.player.x>17&&this.player.z>0?'chapel':this.player.x>16?'lab':'mansion';}
   objective(){
+    if(this.ritual.extraction==='opening')return {text:`Survive the seal release · ${Math.ceil(this.ritual.remaining)}s`,hint:'ECHO WARD · KEEP MOVING OR HIDE',point:new THREE.Vector3(30,1.6,11)};
+    if(this.ritual.solved)return {text:'Enter the evacuation seal',hint:'ECHO WARD · THE FOURTH EXIT',point:new THREE.Vector3(30,1.6,11)};
+    if(this.power&&(this.ritual.step>0||this.notes.has('chapel-note')))return {text:`Play the requiem · ${this.ritual.step}/3 notes`,hint:'ECHO WARD · CONSULT THE LISTENING NOTE',point:new THREE.Vector3(21+(REQUIEM[this.ritual.step]-1)*4,1.7,9)};
     if(!this.power&&!this.inventory.has('fuse'))return {text:'Find the ceramic fuse',hint:'WEST WING · ARCHIVE',point:new THREE.Vector3(-11,1,-12)};
     if(!this.power)return {text:'Restore the lab generator',hint:'EAST WING · LABORATORY',point:new THREE.Vector3(25,1.4,-16)};
     if(this.inventory.has('valve'))return {text:'Open the drainage hatch',hint:'NORTH TUNNEL · WEST BRANCH',point:new THREE.Vector3(-11,.9,-31)};
     if(this.inventory.has('key'))return {text:'Unlock the perimeter gate',hint:'SOUTH · FOREST PATH',point:new THREE.Vector3(0,1.2,40)};
     if(this.notes.has('archive-note'))return {text:'Transmit the evacuation code',hint:'NORTH TUNNEL · EAST BRANCH',point:new THREE.Vector3(10,1.4,-31)};
-    return {text:'Choose an escape route',hint:'[TAB] JOURNAL · THREE WAYS OUT',point:new THREE.Vector3(11,1.2,26)};
+    return {text:'Choose an escape route',hint:'[TAB] JOURNAL · FOUR WAYS OUT',point:new THREE.Vector3(11,1.2,26)};
   }
-  journal(){const check=(done:boolean,text:string)=>`<span class="${done?'done':'pending'}">${done?'✓':'○'} ${text}</span>`;return `<div class="routes"><div class="route"><span class="number">01 / SOUTH</span><h3>The perimeter</h3><p>${check(this.power,'Generator online')}<br>${check(this.inventory.has('key'),'Brass key · greenhouse')}<br>→ Forest gate</p></div><div class="route"><span class="number">02 / NORTH WEST</span><h3>The drainage</h3><p>${check(this.power,'Generator online')}<br>${check(this.inventory.has('valve'),'Valve · laboratory')}<br>→ Tunnel hatch</p></div><div class="route"><span class="number">03 / NORTH EAST</span><h3>The signal</h3><p>${check(this.power,'Generator online')}<br>${check(this.notes.has('archive-note'),'Code · archive access log')}<br>→ Tunnel radio</p></div></div><div class="journal-notes">${this.notes.size?[...this.notes].map(id=>this.world.items.find(i=>i.id===id)!.description.replaceAll('\n','<br>')).join('<br><br>'):'No notes recovered. Search the west archive. The hall runs north to the tunnels and south to the forest.'}</div><p class="muted">Ammunition is scarce. Shots stagger creatures; enough hits put them down for 22 seconds. Crouch for quiet movement. E hides in lockers or beneath the bedroom bed. Space vaults the forest barricades. Autosaves preserve supplies and progress; after death, you return to the foyer.</p>`;}
+  journal(){const check=(done:boolean,text:string)=>`<span class="${done?'done':'pending'}">${done?'✓':'○'} ${text}</span>`;return `<div class="routes"><div class="route"><span class="number">01 / SOUTH</span><h3>The perimeter</h3><p>${check(this.power,'Generator online')}<br>${check(this.inventory.has('key'),'Brass key · greenhouse')}<br>→ Forest gate</p></div><div class="route"><span class="number">02 / NORTH WEST</span><h3>The drainage</h3><p>${check(this.power,'Generator online')}<br>${check(this.inventory.has('valve'),'Valve · laboratory')}<br>→ Tunnel hatch</p></div><div class="route"><span class="number">03 / NORTH EAST</span><h3>The signal</h3><p>${check(this.power,'Generator online')}<br>${check(this.notes.has('archive-note'),'Code · archive access log')}<br>→ Tunnel radio</p></div><div class="route"><span class="number">04 / ECHO WARD</span><h3>The witness</h3><p>${check(this.power,'Generator online')}<br>${check(this.ritual.solved,'Three-bell requiem · '+this.ritual.step+'/3')}<br>→ Seal · south of the laboratory</p></div></div><div class="journal-notes">${this.notes.size?[...this.notes].map(id=>this.world.items.find(i=>i.id===id)!.description.replaceAll('\n','<br>')).join('<br><br>'):'No notes recovered. Search the west archive. The hall runs north to the tunnels and south to the forest.'}</div><p class="muted">Ammunition is scarce. Shots stagger creatures; enough hits put them down for 22 seconds. Crouch for quiet movement. E hides in lockers or beneath the bedroom bed. Space vaults the forest barricades. Autosaves preserve supplies and progress; after death, you return to the foyer.</p>`;}
   interact(){
-    if(this.hidden){this.hidden=false;this.toast('You leave your hiding place.');return;}
+    if(this.hidden){this.hidden=false;this.hideAnchor=null;this.hideKind=null;document.body.classList.remove('in-locker','under-bed');this.syncCamera();this.audio.play('door');this.toast('You leave your hiding place.');return;}
     const i=this.focused;if(!i)return;
     const collect=()=>{this.collected.add(i.id);i.active=false;i.mesh.visible=false;this.audio.play('pickup');this.checkpoints++;};
     if(['fuse','key','valve'].includes(i.type)){this.inventory.add(i.type);collect();this.toast(`${i.name} collected. [TAB] View routes.`);if(i.type==='key'){this.noise(this.player,32);this.grace=0;this.caption('[A scream cuts through the trees. Get to the perimeter gate.]');}}
     else if(i.type==='ammo'){this.reserve+=12;collect();this.toast('+12 pistol rounds');}
     else if(i.type==='medkit'){this.medkits++;collect();this.toast('Medical kit collected. Press H to heal.');}
     else if(i.type==='battery'){this.battery=Math.min(100,this.battery+50);collect();this.toast('Flashlight battery restored +50%');}
-    else if(i.type==='note'){this.notes.add(i.id);collect();this.save();this.show('note',i.description);return;}
+    else if(i.type==='note'){if(i.id==='archive-note')this.director.notify('archive');this.notes.add(i.id);collect();this.save();this.show('note',i.description);return;}
     else if(i.type==='power'){
       if(this.power){this.toast('Power is already restored. Choose your escape route.');return;}
       if(!this.inventory.has('fuse')){this.toast('Missing ceramic fuse. Search the west archive.');return;}
-      this.power=true;this.world.setPower(true);this.inventory.delete('fuse');this.audio.play('switch');this.toast('POWER RESTORED · All three escape systems are online.');this.caption('[The generator thunders to life. Something answers in the hall.]');this.noise(this.player,36);this.grace=0;
+      this.power=true;this.world.setPower(true);this.director.notify('power');this.inventory.delete('fuse');this.audio.play('switch');this.toast('POWER RESTORED · The estate and Echo Ward are online.');this.caption('[The generator thunders to life. Something answers in the hall.]');this.noise(this.player,36);this.grace=0;
     }else if(i.type==='gate'){
       if(this.power&&this.inventory.has('key')){this.win('gate');return;}this.toast(`Gate locked. ${!this.power?'Restore the lab generator. ':''}${!this.inventory.has('key')?'Find the brass key in the greenhouse.':''}`);
     }else if(i.type==='sewer'){
       if(this.power&&this.inventory.has('valve')){this.win('sewer');return;}this.toast(`Hatch sealed. ${!this.power?'Restore the lab generator. ':''}${!this.inventory.has('valve')?'Find the valve in the lab.':''}`);
     }else if(i.type==='radio'){
       if(!this.power){this.toast('No signal. Restore power in the lab first.');return;}this.show('code');return;
+    }else if(i.type==='bell'){
+      const bell=Number(i.id.split('-')[1]);this.world.ringBell(i.id);this.audio.positional('bell',i.position,{x:this.player.x,z:this.player.z,yaw:this.yaw},.85);
+      const result=this.ritual.ring(bell,this.power);
+      if(result==='unpowered')this.toast('The bell rings without an answer. Restore laboratory power.');
+      else if(result==='wrong'){this.toast('A discordant answer. The sequence starts again.');this.caption('[The wrong note travels through the walls. Something listens.]');this.noise(this.player,32);this.audio.play('sting',.5);}
+      else if(result==='solved'){this.world.setRitualSolved(true);this.director.notify('ritual');this.audio.play('ritual');this.toast('REQUIEM COMPLETE · The evacuation seal will answer.');}
+      else this.toast(result==='complete'?'The requiem is complete. Approach the evacuation seal.':`The ward answers · ${this.ritual.step}/3 notes`);
+    }else if(i.type==='seal'){
+      const result=this.ritual.open(this.power);
+      if(result==='open'){this.win('seal');return;}
+      if(result==='unpowered')this.toast('The seal has no power. Restore the laboratory generator.');
+      else if(result==='sealed')this.toast('Three notes are missing. Read the ward’s listening-session note.');
+      else if(result==='started'){this.noise(this.player,50);this.grace=0;this.audio.play('door');this.caption('[The seal grinds open. The whole estate can hear it.]');this.toast('12 SECONDS · Survive, then return to the seal.');}
+      else this.toast(`Seal opening · ${Math.ceil(this.ritual.remaining)} seconds. Keep moving.`);
     }else if(i.type==='locker'){
       const seen=this.enemies.some(e=>(e.state==='chase'||e.state==='attack')&&lineClear(e.position,this.player,this.world.boxes)&&e.position.distanceTo(this.player)<16);
       if(seen){this.toast('It can see you. Break line of sight before hiding.');return;}
-      this.hidden=true;this.audio.play('switch');this.caption('[You hold your breath.]');
+      this.hidden=true;this.hideKind=i.id==='bed-hide'?'bed':'locker';this.hideAnchor=new THREE.Vector3(i.position.x,this.hideKind==='bed'?.3:1.55,i.position.z+(this.hideKind==='locker'?.38:0));if(this.hideKind==='locker'){this.yaw=Math.PI;this.pitch=0;}document.body.classList.toggle('in-locker',this.hideKind==='locker');document.body.classList.toggle('under-bed',this.hideKind==='bed');this.syncCamera();this.audio.play('door');this.caption('[You hold your breath.]');
     }else if(i.type==='obstacle'){this.tryJump();return;}
     this.save();
   }
@@ -118,18 +138,19 @@ export class Game {
   }
   reload(){if(this.reloadTime>0||this.ammo===6)return;if(this.reserve<=0){this.toast('No spare ammunition.');return;}this.reloadTime=1.6;this.audio.play('reload');this.caption('[Magazine clicks into place.]');}
   damage(amount:number){if(this.invulnerability>0||this.mode!=='playing')return;this.health=Math.max(0,this.health-amount);this.invulnerability=.85;this.audio.play('hit');$('#damage-flash').style.opacity=this.settings.reducedScares?'.35':'.7';this.caption('[Pain. It is too close. Get away!]');if(this.health<=0){this.show('dead');}}
-  win(route:'gate'|'sewer'|'radio'){
-    const text={gate:'The gate gives way. You run until the lights of Blackthorn disappear behind the trees.',sewer:'The hatch opens into cold water. You follow the current until the air smells like morning.',radio:'A voice answers the static. “Stay on this frequency. We see your signal.” For the first time tonight, you are not alone.'};
+  win(route:'gate'|'sewer'|'radio'|'seal'){
+    const text={seal:'The seal opens into an evacuation corridor that does not appear on any map. You take the patient ledger with you. By morning, the missing will finally have names. The estate has lost its witnesses.',gate:'The gate gives way. You run until the lights of Blackthorn disappear behind the trees.',sewer:'The hatch opens into cold water. You follow the current until the air smells like morning.',radio:'A voice answers the static. “Stay on this frequency. We see your signal.” For the first time tonight, you are not alone.'};
     const mins=Math.floor(this.time/60),seconds=Math.floor(this.time%60).toString().padStart(2,'0');
     try{localStorage.removeItem(SAVE_KEY);const endings=JSON.parse(localStorage.getItem('ndz-endings')||'[]') as string[];localStorage.setItem('ndz-endings',JSON.stringify([...new Set([...endings,route])]));}catch{}
-    this.show('won',`${text[route]}<br><br><span class="eyebrow">${route.toUpperCase()} ENDING · ${mins}:${seconds} · ${this.settings.difficulty.toUpperCase()}</span>`);this.audio.start(this.settings.volume);this.audio.play('win');
+    this.show('won',`${text[route]}<br><br><span class="eyebrow">${route==='seal'?'THE WITNESS':route.toUpperCase()} ENDING · ${mins}:${seconds} · ${this.settings.difficulty.toUpperCase()}</span>`);this.audio.start(this.settings.volume);this.audio.play('win');
   }
   update(dt:number){
-    this.time+=dt;this.grace-=dt;this.invulnerability=Math.max(0,this.invulnerability-dt);this.shotCooldown=Math.max(0,this.shotCooldown-dt);this.flashTime=Math.max(0,this.flashTime-dt);this.recoil=Math.max(0,this.recoil-dt*.5);
+    this.time+=dt;const previousExtraction=this.ritual.extraction;this.ritual.update(dt);if(previousExtraction==='opening'&&this.ritual.extraction==='open'){this.audio.play('secret');this.toast('THE SEAL IS OPEN · Return to the Echo Ward exit.');this.save();}this.grace-=dt;this.invulnerability=Math.max(0,this.invulnerability-dt);this.shotCooldown=Math.max(0,this.shotCooldown-dt);this.flashTime=Math.max(0,this.flashTime-dt);this.recoil=Math.max(0,this.recoil-dt*.5);
     this.messageTime-=dt;this.subtitleTime-=dt;if(this.messageTime<0)$('#toast').classList.remove('visible');if(this.subtitleTime<0)$('#subtitle').classList.remove('visible');
     if(this.tutorialTime>0){this.tutorialTime-=dt;if(this.tutorialTime<=0)$('#tutorial').style.display='none';}
     if(this.reloadTime>0){this.reloadTime-=dt;if(this.reloadTime<=0){const rounds=Math.min(6-this.ammo,this.reserve);this.ammo+=rounds;this.reserve-=rounds;}}
     this.yaw-=this.input.dx*.0022*this.settings.sensitivity;this.pitch=THREE.MathUtils.clamp(this.pitch-this.input.dy*.0022*this.settings.sensitivity,-1.4,1.4);
+    if(this.hidden&&this.hideKind==='locker'){this.yaw=THREE.MathUtils.clamp(this.yaw,Math.PI-.65,Math.PI+.65);this.pitch=THREE.MathUtils.clamp(this.pitch,-.25,.25);}
     if(this.input.take('KeyC')||this.input.take('ControlLeft'))this.crouched=!this.crouched;
     if(this.input.take('KeyF')){this.flashlight=!this.flashlight;this.audio.play('switch');}
     if(this.input.take('Space'))this.tryJump();
@@ -138,11 +159,12 @@ export class Game {
     if(this.input.take('KeyQ')){if(this.decoys>0){this.decoys--;const p={x:this.player.x-Math.sin(this.yaw)*8,z:this.player.z-Math.cos(this.yaw)*8};this.noise(p,25);this.audio.play('decoy');this.caption('[Glass shatters in the distance.]');this.toast('Decoy thrown. Move away quietly.');}else this.toast('No decoys left.');}
     if(this.input.take('Tab')){this.action('journal');return;}
     if(this.input.take('KeyE')){this.syncCamera();this.updateFocus();this.interact();if(this.mode!=='playing')return;}
-    if(this.input.take('Fire')||this.input.fire)this.shoot();
+    if(this.input.take('Fire')||this.input.fire||this.input.down('KeyV'))this.shoot();
     const forward=(this.input.down('KeyW','ArrowUp')?1:0)-(this.input.down('KeyS','ArrowDown')?1:0)+this.input.move.y;
     const strafe=(this.input.down('KeyD','ArrowRight')?1:0)-(this.input.down('KeyA','ArrowLeft')?1:0)+this.input.move.x;
     const len=Math.hypot(forward,strafe),moving=len>.05&&!this.hidden;
-    const running=this.input.down('ShiftLeft','ShiftRight')&&!this.crouched&&this.stamina>2&&moving;
+    if(this.stamina<=2)this.exhausted=true;if(this.stamina>=20)this.exhausted=false;
+    const running=this.input.down('ShiftLeft','ShiftRight')&&!this.crouched&&!this.exhausted&&moving;
     if(running)this.stamina=Math.max(0,this.stamina-dt*22);else this.stamina=Math.min(100,this.stamina+dt*16);
     const speed=this.hidden?0:this.crouched?1.45:running?5:2.7;
     if(this.vault){this.vault.t+=dt/ .5;const t=Math.min(1,this.vault.t);this.player.lerpVectors(this.vault.start,this.vault.end,t);this.feet=this.vault.startFeet*(1-t)+Math.sin(t*Math.PI)*this.vault.height;if(t>=1){this.vault=null;this.feet=0;}}
@@ -157,27 +179,35 @@ export class Game {
     if(this.flashlight&&!this.hidden){this.battery=Math.max(0,this.battery-dt*difficulty[this.settings.difficulty].battery);if(this.battery===0)this.flashlight=false;}
     const r=this.rendering, bob=this.settings.reducedMotion||!moving?0:Math.sin(this.time*(running?13:9))*(running?.042:.022);
     const targetHeight=this.crouched?1.05:1.68;this.player.y=THREE.MathUtils.damp(this.player.y,targetHeight,12,dt);
-    r.camera.position.set(this.player.x,this.player.y+this.feet+bob,this.player.z);r.camera.rotation.set(this.pitch+(this.settings.reducedMotion?0:this.recoil),this.yaw,0);
+    if(this.hidden&&this.hideAnchor)r.camera.position.copy(this.hideAnchor);else r.camera.position.set(this.player.x,this.player.y+this.feet+bob,this.player.z);r.camera.rotation.set(this.pitch+(this.settings.reducedMotion?0:this.recoil),this.yaw,0);
     r.camera.fov=THREE.MathUtils.damp(r.camera.fov,this.input.aim?52:72,10,dt);r.camera.updateProjectionMatrix();r.flashlight.visible=this.flashlight&&this.battery>0&&!this.hidden;
     r.flashlight.intensity=55*(this.battery<12?.7+Math.sin(this.time*28)*.25:1);r.muzzle.intensity=this.flashTime>0?8:0;
     r.gun.visible=!this.hidden;r.gun.position.lerp(new THREE.Vector3(this.input.aim?.0:.26,this.input.aim?-.18:-.27,-.47+(this.recoil*.8)),.18);r.gun.rotation.x=this.reloadTime>0?-.6:0;r.gun.rotation.z=this.reloadTime>0?-.35:0;
-    if(this.grace<=0)this.enemies.forEach(e=>e.update(dt,this.time,{x:this.player.x,z:this.player.z,hidden:this.hidden,crouched:this.crouched,flashlight:this.flashlight},this.settings.difficulty,n=>this.damage(n),()=>{this.audio.play('growl');this.caption(e.kind==='warden'?'[The Warden inhales sharply. It has seen you.]':'[A low chitter from the trees. Something is rushing you.]');}));
+    if(this.grace<=0)this.enemies.forEach(e=>e.update(dt,this.time,{x:this.player.x,z:this.player.z,hidden:this.hidden,crouched:this.crouched,flashlight:this.flashlight},this.settings.difficulty,n=>this.damage(n),()=>{this.audio.positional('growl',e.position,{x:this.player.x,z:this.player.z,yaw:this.yaw});this.caption(e.kind==='warden'?'[The Warden inhales sharply. It has seen you.]':'[A low chitter from the trees. Something is rushing you.]');}));
     this.danger=this.enemies.some(e=>e.state==='chase'||e.state==='attack')?1:Math.max(0,this.danger-dt*.3);
+    const listener={x:this.player.x,z:this.player.z,yaw:this.yaw};
+    for(const enemy of this.enemies){const previous=this.enemySteps.get(enemy)??0;if(enemy.stepCount!==previous&&this.player.distanceTo(enemy.position)<22){this.audio.positional('enemy-step',enemy.position,listener,(enemy.kind==='warden'?.8:.5)*(lineClear(enemy.position,this.player,this.world.boxes)?1:.4));if(this.settings.subtitles&&this.subtitleTime<=0&&this.player.distanceTo(enemy.position)<12){const right=(enemy.position.x-this.player.x)*Math.cos(this.yaw)-(enemy.position.z-this.player.z)*Math.sin(this.yaw);this.caption(enemy.kind==='warden'?`[Heavy footsteps ${Math.abs(right)<1?'ahead':right>0?'to your right':'to your left'}.]`:'[Claws scrape nearby.]');}}this.enemySteps.set(enemy,enemy.stepCount);}
+    if(this.zone()==='chapel')this.director.notify('chapel');if(this.power&&Math.abs(this.player.x)<3&&this.player.z>-7&&this.player.z<4)this.director.notify('corridor');
+    for(const event of this.director.update(dt,this.player,this.danger)){
+      if(event.kind==='apparition'){event.x=0;event.z=THREE.MathUtils.clamp(this.player.z+(Math.cos(this.yaw)>0?-8:8),-15,12);}this.caption(event.kind==='apparition'&&this.settings.reducedScares?'[Footsteps stop ahead. You hear nobody leave.]':event.caption);if(event.kind==='thunder')this.audio.play('thunder');else this.audio.positional(event.kind==='apparition'?'knock':event.kind,event,listener,.7);this.horror.trigger(event,this.settings.reducedScares);
+    }
+    this.audio.update(dt,{...listener,zone:this.zone(),danger:this.danger,stamina:this.stamina,hidden:this.hidden,power:this.power});
+    this.horror.update(dt,this.time,this.player,this.settings.quality,this.settings.reducedScares);this.world.setHaunting(this.danger*.5+(this.ritual.extraction==='opening'?.5:0),this.time);
     this.updateFocus();this.uiTime+=dt;if(this.uiTime>.07){this.updateHUD();this.uiTime=0;}
     $('#damage-flash').style.opacity=String(Math.max(0,Number($('#damage-flash').style.opacity||0)-dt));$('#hit-marker').style.opacity=String(Math.max(0,Number($('#hit-marker').style.opacity||0)-dt*3));
   }
-  syncCamera(){const c=this.rendering.camera;c.position.set(this.player.x,this.player.y+this.feet,this.player.z);c.rotation.set(this.pitch,this.yaw,0);c.updateMatrixWorld(true);}
+  syncCamera(){const c=this.rendering.camera;if(this.hidden&&this.hideAnchor)c.position.copy(this.hideAnchor);else c.position.set(this.player.x,this.player.y+this.feet,this.player.z);c.rotation.set(this.pitch,this.yaw,0);c.updateMatrixWorld(true);}
   updateFocus(){
-    this.focused=null;let nearest=2.7;this.rendering.camera.getWorldDirection(this.lookingDirection);
+    this.focused=null;let best=-Infinity;this.rendering.camera.getWorldDirection(this.lookingDirection);
     if(this.hidden){this.ui.prompt('Leave hiding place','Listen before you step out.',true);return;}
-    for(const i of this.world.items){if(!i.active)continue;const dist=Math.hypot(i.position.x-this.player.x,i.position.z-this.player.z);this.tmp.copy(i.position).sub(this.rendering.camera.position).normalize();if(dist<nearest&&this.tmp.dot(this.lookingDirection)>.38&&lineClear(this.player,i.position,this.world.boxes.filter(b=>b.tag!==i.id),1.6)){this.focused=i;nearest=dist;}}
+    for(const i of this.world.items){if(!i.active)continue;const dist=Math.hypot(i.position.x-this.player.x,i.position.z-this.player.z);this.tmp.copy(i.position).sub(this.rendering.camera.position).normalize();const alignment=this.tmp.dot(this.lookingDirection),score=alignment*4-dist*.3;if(dist<2.7&&alignment>.72&&score>best&&lineClear(this.player,i.position,this.world.boxes.filter(b=>b.tag!==i.id),1.6)){this.focused=i;best=score;}}
     const i=this.focused;this.ui.prompt(i?.name??'',i?.type==='obstacle'?'Press SPACE to vault':i?.description.split('\n')[0]??'',!!i);
   }
   updateHUD(){
     $('#health-label').textContent=String(Math.ceil(this.health));$('#health-bar').style.width=`${this.health}%`;$('#stamina-bar').style.width=`${this.stamina}%`;$('#battery-label').textContent=`▰ ${Math.ceil(this.battery)}% ${this.flashlight?'':'OFF'}`;
     $('#ammo-label').innerHTML=`${this.ammo} <em>/ ${this.reserve}</em>`;$('#medkit-label').textContent=String(this.medkits);$('#decoy-label').textContent=String(this.decoys);$('#weapon-status').textContent=this.reloadTime>0?'RELOADING':this.ammo===0?'EMPTY':'READY';
     $('#inventory-label').textContent=[...(this.power?['POWER ON']:[]),...this.inventory].map(s=>s.toUpperCase()).join(' / ')||'NO KEY ITEMS';
-    $('#zone').textContent=this.player.z>14?'SOUTH / BLACKTHORN FOREST':this.player.z<-18?'NORTH / DRAINAGE TUNNELS':this.player.x>16?'EAST / ABANDONED LAB':'BLACKTHORN ESTATE';
+    $('#zone').textContent=this.player.z>14?'SOUTH / BLACKTHORN FOREST':this.player.z<-18?'NORTH / DRAINAGE TUNNELS':this.player.x>17&&this.player.z>0?'ECHO WARD / LISTENING CHAPEL':this.player.x>16?'EAST / ABANDONED LAB':'BLACKTHORN ESTATE';
     const angle=((this.yaw*180/Math.PI)%360+360)%360;const dir=['N','NW','W','SW','S','SE','E','NE'][Math.round(angle/45)%8];$('#compass').textContent=`${dir} · ${Math.round((360-angle)%360)}°`;
     $('#threat').style.opacity=String(this.danger);$('#hidden-status').style.display=this.hidden?'block':'none';$('#crosshair').classList.toggle('aim',this.input.aim);
     $('#pointer-hint').style.display=!document.pointerLockElement&&!this.input.touch?'block':'none';
@@ -199,8 +229,8 @@ export class Game {
   exposeTestAPI(){
     const game=this;
     (window as unknown as {__game:unknown}).__game={
-      get state(){return {mode:game.mode,health:game.health,ammo:game.ammo,reserve:game.reserve,power:game.power,inventory:[...game.inventory],position:{x:game.player.x,z:game.player.z},enemies:game.enemies.map(e=>({state:e.state,x:e.position.x,z:e.position.z,health:e.health})),items:game.world.items.map(i=>({id:i.id,active:i.active})),hidden:game.hidden,feet:game.feet,crouched:game.crouched,yaw:game.yaw,flashlight:game.flashlight,settings:game.settings,battery:game.battery,audioState:game.audio.ctx?.state};},
-      teleport(x:number,z:number,yaw=0){game.vault=null;game.feet=0;game.velocityY=0;game.hidden=false;game.player.set(x,1.68,z);game.yaw=yaw;game.pitch=0;game.grace=60;game.update(.016);},
+      get state(){return {mode:game.mode,health:game.health,ammo:game.ammo,reserve:game.reserve,power:game.power,inventory:[...game.inventory],position:{x:game.player.x,z:game.player.z},enemies:game.enemies.map(e=>({state:e.state,x:e.position.x,z:e.position.z,health:e.health})),items:game.world.items.map(i=>({id:i.id,active:i.active})),hidden:game.hidden,feet:game.feet,crouched:game.crouched,yaw:game.yaw,flashlight:game.flashlight,settings:game.settings,battery:game.battery,audioState:game.audio.ctx?.state,audio:game.audio.debugStats(),ritual:game.ritual.snapshot(),encounters:[...game.director.fired],camera:{x:game.rendering.camera.position.x,y:game.rendering.camera.position.y,z:game.rendering.camera.position.z}};},
+      teleport(x:number,z:number,yaw=0){game.vault=null;game.feet=0;game.velocityY=0;game.hidden=false;game.hideAnchor=null;game.hideKind=null;document.body.classList.remove('in-locker','under-bed');game.player.set(x,1.68,z);game.yaw=yaw;game.pitch=0;game.grace=60;game.update(.016);},
       face(x:number,z:number,y=1){game.yaw=Math.atan2(game.player.x-x,game.player.z-z);const d=Math.hypot(x-game.player.x,z-game.player.z);game.pitch=Math.atan2(y-1.68,d);game.update(.016);},
       interact(id:string){game.focused=game.world.items.find(i=>i.id===id)??null;game.interact();},
       noise(x:number,z:number,volume:number){game.noise({x,z},volume);},

@@ -18,4 +18,4 @@ export function normalizeSettings(value: unknown): Settings {
 export function readSettings(): Settings { try { return normalizeSettings(JSON.parse(localStorage.getItem('ndz-settings') || '{}')); } catch { return { ...defaultSettings }; } }
 export const SAVE_KEY = 'ndz-save-v1';
 export const CODE = '0417';
-export const CONTROLS = [ ['W A S D', 'Move'], ['MOUSE', 'Look'], ['SHIFT', 'Sprint'], ['C / CTRL', 'Crouch'], ['SPACE', 'Jump / vault marked obstacles'], ['E', 'Interact / hide / leave hiding'], ['CLICK', 'Fire'], ['RIGHT CLICK', 'Aim'], ['R', 'Reload'], ['F', 'Flashlight'], ['Q', 'Throw a noise decoy'], ['H', 'Use medical kit'], ['TAB', 'Journal & routes'], ['ESC / P', 'Pause / resume'] ];
+export const CONTROLS = [ ['W A S D', 'Move'], ['MOUSE', 'Look'], ['SHIFT', 'Sprint'], ['C / CTRL', 'Crouch'], ['SPACE', 'Jump / vault marked obstacles'], ['E', 'Interact / hide / leave hiding'], ['CLICK / V', 'Fire'], ['RIGHT CLICK', 'Aim'], ['R', 'Reload'], ['F', 'Flashlight'], ['Q', 'Throw a noise decoy'], ['H', 'Use medical kit'], ['TAB', 'Journal & routes'], ['ESC / P', 'Pause / resume'] ];

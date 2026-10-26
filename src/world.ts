@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import type { Box } from './physics';
-export type ItemType='fuse'|'key'|'valve'|'ammo'|'medkit'|'battery'|'note'|'power'|'gate'|'sewer'|'radio'|'locker'|'obstacle';
+export type ItemType='fuse'|'key'|'valve'|'ammo'|'medkit'|'battery'|'note'|'power'|'gate'|'sewer'|'radio'|'locker'|'obstacle'|'bell'|'seal';
 export interface Interactable { id:string; type:ItemType; name:string; description:string; position:THREE.Vector3; mesh:THREE.Object3D; active:boolean; }
 export class World {
   boxes:Box[]=[]; solidMeshes:THREE.Mesh[]=[]; items:Interactable[]=[]; lights:THREE.PointLight[]=[]; emergency:THREE.PointLight[]=[]; rain:THREE.Points; scene:THREE.Scene; power=false; private rainPositions:Float32Array;
   private materials:Record<string,THREE.MeshStandardMaterial>={};
+  private ritualMaterials:THREE.MeshStandardMaterial[]=[];private ritualLights:THREE.PointLight[]=[];private candles:THREE.Mesh[]=[];private hauntingStrength=0;private hauntingTime=0;
   constructor(scene:THREE.Scene){
     this.scene=scene;
     this.materials.wall=this.texture('#69766b','#47574e',true);
@@ -52,6 +53,17 @@ export class World {
     if(type==='locker'){
       model=new THREE.Mesh(new THREE.BoxGeometry(1.2,2.6,.9),this.materials.metal);model.position.y=.4;
       for(let i=0;i<5;i++){const vent=new THREE.Mesh(new THREE.BoxGeometry(.65,.035,.04),new THREE.MeshBasicMaterial({color:0x101d19}));vent.position.set(0,1.1-i*.13,.47);group.add(vent);}
+    }else if(type==='bell'){
+      model=new THREE.Group();const bronze=new THREE.MeshStandardMaterial({color:0xc09a59,emissive:0x6a491d,emissiveIntensity:.18,metalness:.7,roughness:.4,side:THREE.DoubleSide});this.ritualMaterials.push(bronze);
+      const cup=new THREE.Mesh(new THREE.CylinderGeometry(.13,.34,.4,16,1,true),bronze);cup.position.y=.04;
+      const rim=new THREE.Mesh(new THREE.TorusGeometry(.34,.035,6,20),bronze);rim.rotation.x=Math.PI/2;rim.position.y=-.16;
+      const clapper=new THREE.Mesh(new THREE.SphereGeometry(.06,8,6),this.materials.metal);clapper.position.y=-.18;
+      const hanger=new THREE.Mesh(new THREE.TorusGeometry(.08,.022,6,12),bronze);hanger.position.y=.3;model.add(cup,rim,clapper,hanger);
+    }else if(type==='seal'){
+      model=new THREE.Group();const seal=new THREE.MeshStandardMaterial({color:0x9f7246,emissive:0xb26a2b,emissiveIntensity:.4,metalness:.5,roughness:.55,side:THREE.DoubleSide});this.ritualMaterials.push(seal);
+      const ring=new THREE.Mesh(new THREE.TorusGeometry(.78,.075,8,40),seal);model.add(ring);
+      for(let i=0;i<6;i++){const spoke=new THREE.Mesh(new THREE.BoxGeometry(.035,.5,.04),seal);spoke.position.set(Math.sin(i*Math.PI/3)*.4,Math.cos(i*Math.PI/3)*.4,0);spoke.rotation.z=-i*Math.PI/3;model.add(spoke);}
+      const center=new THREE.Mesh(new THREE.OctahedronGeometry(.12),seal);model.add(center);
     }else if(['power','radio'].includes(type)){
       model=new THREE.Mesh(new THREE.BoxGeometry(type==='radio'?1.5:1,.9,.45),material);
       const led=new THREE.Mesh(new THREE.SphereGeometry(.06,6,6),new THREE.MeshBasicMaterial({color:0x9adcaa}));led.position.set(.25,.2,.25);group.add(led);
@@ -112,7 +124,15 @@ export class World {
     }
     this.table(-11,-12,3,1.2);this.table(11,6,5,1.6);this.table(12,-13,2.6,1.2);this.table(-12,2,2,1);
     // Beds and shelves double as cover.
-    for(const [x,z] of [[-12,8],[-8,8]]){this.mesh(2,.45,3.4,x,.38,z,'wood',true);this.mesh(1.9,.17,3.25,x,.69,z,new THREE.MeshStandardMaterial({color:0x596456}));this.mesh(1.6,.15,.6,x,.84,z-1.1,new THREE.MeshStandardMaterial({color:0x929582}));}
+    for(const [x,z] of [[-12,8],[-8,8]]){
+      // Keep a single support volume, but leave real visual clearance for a hidden eye at y=.3.
+      this.boxes.push({x,z,w:2,d:3.4,h:.775});
+      for(const dx of [-.94,.94])this.solidMeshes.push(this.mesh(.12,.14,3.4,x+dx,.54,z,'wood'));
+      for(const dz of [-1.64,1.64])this.solidMeshes.push(this.mesh(2,.2,.12,x,.57,z+dz,'wood'));
+      for(const dx of [-.88,.88])for(const dz of [-1.5,1.5])this.solidMeshes.push(this.mesh(.13,.55,.13,x+dx,.275,z+dz,'wood'));
+      this.solidMeshes.push(this.mesh(1.9,.17,3.25,x,.69,z,new THREE.MeshStandardMaterial({color:0x596456})));
+      this.mesh(1.6,.15,.6,x,.84,z-1.1,new THREE.MeshStandardMaterial({color:0x929582}));
+    }
     for(const z of [-15,-8]){this.wall(-15,z,1.1,4,'wood',2.8);for(let i=0;i<16;i++){const b=this.mesh(.15,.55,.5,-14.38,.5+Math.floor(i/8)*.8,z-1.5+(i%8)*.36,new THREE.MeshStandardMaterial({color:new THREE.Color().setHSL(.06+i*.015,.18,.16+i%3*.035)}));b.rotation.x=.03*(i%3);}}
     this.addItem('bed-hide','locker','Hide beneath the bed','Stay still. Being seen entering gives your hiding place away.',-8,8,.3).mesh.visible=false;
     this.addItem('bedroom-locker','locker','Hide in locker','Break line of sight before hiding.',-14,4,1);
@@ -122,7 +142,7 @@ export class World {
     this.addItem('bedroom-med','medkit','Medical kit','Press H to heal 45 health.',-13,10,.25);
     this.addItem('dining-battery','battery','Flashlight battery','Restores 50% battery.',11,6,1.05);
     // Lab extension.
-    this.wall(25,-18,18,.5,'concrete');this.wall(34,-9,.5,18,'concrete');this.wall(25,0,18,.5,'concrete');this.mesh(18,.15,18,25,3.85,-9,'concrete');
+    this.wall(25,-18,18,.5,'concrete');this.wall(34,-9,.5,18,'concrete');this.wall(19.6,0,7.2,.5,'concrete');this.wall(30.4,0,7.2,.5,'concrete');this.mesh(18,.15,18,25,3.85,-9,'concrete');
     this.sign('SECTOR 04 / NEURAL RESEARCH',25,2.8,-17.7,0,5);
     this.sign('POWER / INSERT FUSE',25,2,-16.9,0,3.5);
     this.table(25,-16,3,1);this.addItem('generator','power','Lab generator','Requires a ceramic fuse from the archive.',25,-16,1.4);
@@ -158,7 +178,66 @@ export class World {
     // Environmental narrative: broken laboratory containment vessel.
     for(const x of [19,31]){const tank=new THREE.Mesh(new THREE.CylinderGeometry(.7,.7,2.3,12,1,true),new THREE.MeshStandardMaterial({color:0x68968b,transparent:true,opacity:.18,side:THREE.DoubleSide,metalness:.7,roughness:.2}));tank.position.set(x,1.25,-10);this.scene.add(tank);this.mesh(1.6,.2,1.6,x,.1,-10,'metal',true);}
     this.sign('DO NOT TRUST THE VOICES',11,1.8,-17.7,0,4,'#b28b76');
+    this.buildEchoWard();this.addStoryDetails();
   }
+  private candle(x:number,z:number,y:number){
+    const wax=new THREE.MeshStandardMaterial({color:0xc7b98c,roughness:.95});const body=new THREE.Mesh(new THREE.CylinderGeometry(.055,.065,.24,8),wax);body.position.set(x,y+.12,z);this.scene.add(body);
+    const flame=new THREE.Mesh(new THREE.ConeGeometry(.045,.17,6),new THREE.MeshBasicMaterial({color:0xffc777,transparent:true,opacity:.88}));flame.position.set(x,y+.32,z);this.scene.add(flame);this.candles.push(flame);
+  }
+  private buildEchoWard(){
+    // The former therapy chapel connects through the lab's southern wall. Its center aisle stays unobstructed.
+    const plaster=this.texture('#897e68','#5d6152',true),runner=new THREE.MeshStandardMaterial({color:0x56483b,roughness:1});
+    this.mesh(16,.13,14,26,-.02,7,'concrete');this.mesh(16,.18,14,26,4.2,7,'wood');
+    this.wall(18,7,.4,14,'concrete',4.2);this.wall(34,7,.4,14,'concrete',4.2);this.mesh(16,4.2,.4,26,2.1,14,plaster,true);
+    this.mesh(3,.025,11,25,.07,6.5,runner);
+    this.sign('ECHO WARD / RESONANCE THERAPY',25,2.8,.24,0,5.6,'#d4bc8a');
+    this.sign('ECHO WARD  →',25,2.6,-.3,Math.PI,3.6,'#d0bd92');
+    this.sign('THE ROOM REMEMBERS',25,3.25,13.75,Math.PI,4.4,'#c2a980');
+    // Four restrained pews leave two-metre approaches to all bells.
+    for(const x of [20.7,29.4])for(const z of [3.5,5.5]){
+      this.mesh(3,.18,.65,x,.52,z,'wood',true);this.mesh(3,.82,.13,x,.85,z-.3,'wood',true);
+      for(const dx of [-1.2,1.2])this.mesh(.12,.5,.5,x+dx,.25,z,'wood');
+    }
+    // Tall acoustic panels and cracked observation glass, kept outside navigation routes.
+    for(const x of [18.26,33.74])for(const z of [3,7,11])this.mesh(.09,2.4,1.6,x,2,z,'wood');
+    for(const x of [20.5,25,29.5]){
+      const glass=this.mesh(2.2,1.7,.05,x,2.8,13.73,new THREE.MeshStandardMaterial({color:0x66877c,transparent:true,opacity:.32,roughness:.32,metalness:.25}));
+      this.mesh(.05,1.75,.08,x,2.8,13.67,'metal');this.mesh(2.25,.05,.08,x,2.8,13.67,'metal');
+      const shard=new THREE.Mesh(new THREE.PlaneGeometry(.025,1.2),new THREE.MeshBasicMaterial({color:0xa4b4a1,transparent:true,opacity:.4,side:THREE.DoubleSide}));shard.position.copy(glass.position);shard.position.z-=.04;shard.rotation.z=.4;this.scene.add(shard);
+    }
+    for(let i=0;i<3;i++){
+      const x=21+i*4,id=`bell-${i+1}`,roman=['I','II','III'][i];
+      this.mesh(.8,.95,.8,x,.475,9,'concrete',true);this.mesh(1,.12,1,x,1.0,9,'wood');
+      this.mesh(.09,.8,.09,x-.45,1.46,9,'metal');this.mesh(.09,.8,.09,x+.45,1.46,9,'metal');this.mesh(1,.09,.09,x,1.87,9,'metal');
+      this.addItem(id,'bell',`Resonance bell ${roman}`,'Ring the bell. Listen to the others before choosing the next.',x,9,1.43);
+      this.sign(roman,x,.67,8.57,Math.PI,.55,'#d8c79c');this.candle(x-.3,9,1.06);
+    }
+    this.table(20.6,11.5,1.5,.8);this.addItem('chapel-note','note','The last listening session','ECHO WARD / FINAL SESSION\nThey told the patients that the bells could quiet the signal. The staff were wrong. They could only teach it a name.\nRemember the listening order: II → I → III. Ring those three bells without a mistake.\nRestore the laboratory generator. Then the evacuation seal in this room will answer.\nIf you hear your own footsteps coming back, do not follow them.',20.6,11.5,1.04);
+    this.addItem('chapel-exit','seal','Echo Ward evacuation seal','Restore the generator and complete the resonance sequence.',30,11,1.6);
+    this.mesh(2.5,.12,1.6,30,.12,11,'concrete');
+    const sealLight=this.light(30,11.3,0xd4965a,15,2.9);sealLight.userData.wardIntensity=15;this.ritualLights.push(sealLight);
+    for(const [x,z,power] of [[25,3,26],[21,8,18],[29,8,18]]){const l=this.light(x,z,0xd3b98d,power,3.2);l.userData.wardIntensity=power;}
+    this.addItem('chapel-battery','battery','Sealed battery','A battery wrapped in a patient admission slip.',31.8,3,.3);
+    this.addItem('chapel-med','medkit','Field dressing','Someone prepared to leave, but never reached the door.',19.5,8,.3);
+    this.addItem('chapel-locker','locker','Hide in linen cabinet','The doors have been padded from the inside.',32.4,6.5,1);
+  }
+  private addStoryDetails(){
+    // A clock with a missing hand, personal effects, and abandoned observation equipment.
+    const dial=new THREE.Mesh(new THREE.CylinderGeometry(.38,.38,.06,24),new THREE.MeshStandardMaterial({color:0xc1b89a,roughness:.9}));dial.rotation.x=Math.PI/2;dial.position.set(3.6,2.8,-17.65);this.scene.add(dial);
+    this.mesh(.025,.26,.08,3.6,2.88,-17.58,'metal');this.sign('STOPPED AT 04:17',3.6,2.2,-17.65,0,1.8,'#9aa78b');
+    const cloth=new THREE.MeshStandardMaterial({color:0x817b6b,roughness:1});
+    for(const [x,z] of [[10.8,-13],[-11.5,8]]){const bundle=new THREE.Mesh(new THREE.SphereGeometry(.28,10,6),cloth);bundle.scale.set(1.7,.4,1);bundle.position.set(x,1.05,z);this.scene.add(bundle);}
+    for(const x of [-2.6,2.6]){this.mesh(.18,1.5,.18,x,.75,16.8,'wood');this.sign(x<0?'DO NOT ANSWER':'IF IT USES YOUR NAME',x,1.45,16.7,Math.PI,2.3,'#b9a580');}
+    // Old cable conduits lead toward the Echo Ward door and emphasize the shared power system.
+    for(const x of [23.5,26.5])this.mesh(.07,.08,12,x,3.5,-5.7,'metal');
+    this.sign('SESSION 17: NO RESPONSE',32.7,1.8,-17.7,0,2.1,'#a8bba6');
+  }
+  ringBell(id:string){const bell=this.items.find(i=>i.id===id&&i.type==='bell');if(bell)bell.mesh.userData.ringPulse=1;}
+  setRitualSolved(on:boolean){
+    for(const material of this.ritualMaterials){material.color.setHex(on?0xa1c5ac:0xc09a59);material.emissive.setHex(on?0x368c78:0x6a491d);material.emissiveIntensity=on?.65:.18;}
+    for(const light of this.ritualLights){light.color.setHex(on?0x8fe5c4:0xd4965a);light.userData.wardIntensity=on?26:15;}
+  }
+  setHaunting(strength:number,time:number){this.hauntingStrength=THREE.MathUtils.clamp(strength,0,1);this.hauntingTime=Number.isFinite(time)?time:0;}
   setPower(on:boolean){this.power=on;this.emergency.forEach(l=>{l.intensity=on?42:12;});}
-  update(dt:number,t:number,quality:string,viewer:THREE.Vector3){const budget=quality==='low'?4:quality==='medium'?6:8;const closest=new Set([...this.lights].sort((a,b)=>a.position.distanceToSquared(viewer)-b.position.distanceToSquared(viewer)).slice(0,budget));this.lights.forEach(l=>{l.visible=closest.has(l);});this.rain.visible=quality!=='low';if(this.rain.visible){for(let i=0;i<this.rainPositions.length;i+=3){this.rainPositions[i+1]-=dt*11;if(this.rainPositions[i+1]<0)this.rainPositions[i+1]=16;}this.rain.geometry.attributes.position.needsUpdate=true;}this.lights.forEach((l,i)=>{if(!this.emergency.includes(l))l.intensity=(i<3?26:22)*(1+Math.sin(t*2+i*4)*.025);});for(const item of this.items){if(item.active&&['fuse','key','valve','ammo','medkit','battery'].includes(item.type)){item.mesh.rotation.y=Math.sin(t*.8)*.15;}}}
+  update(dt:number,t:number,quality:string,viewer:THREE.Vector3){const budget=quality==='low'?4:quality==='medium'?6:8;const closest=new Set([...this.lights].sort((a,b)=>a.position.distanceToSquared(viewer)-b.position.distanceToSquared(viewer)).slice(0,budget));this.lights.forEach(l=>{l.visible=closest.has(l);});this.rain.visible=quality!=='low';if(this.rain.visible){for(let i=0;i<this.rainPositions.length;i+=3){this.rainPositions[i+1]-=dt*11;if(this.rainPositions[i+1]<0)this.rainPositions[i+1]=16;}this.rain.geometry.attributes.position.needsUpdate=true;}this.lights.forEach((l,i)=>{if(!this.emergency.includes(l)){const base=Number(l.userData.wardIntensity)||(i<3?26:22);const pulse=Math.max(0,Math.sin(this.hauntingTime*7.2+i*3.1));l.intensity=base*(1+Math.sin(t*2+i*4)*.025)*(1-this.hauntingStrength*pulse*.12);}});for(const flame of this.candles){flame.scale.y=.9+Math.sin(t*9+flame.position.x)*.1;flame.rotation.z=Math.sin(t*5+flame.position.z)*.06;}for(const item of this.items){if(item.type==='bell'){const pulse=Number(item.mesh.userData.ringPulse)||0;item.mesh.rotation.z=Math.sin(t*18)*pulse*.14;item.mesh.userData.ringPulse=Math.max(0,pulse-dt*.8);}if(item.active&&['fuse','key','valve','ammo','medkit','battery'].includes(item.type)){item.mesh.rotation.y=Math.sin(t*.8)*.15;}}}
 }

@@ -31,19 +31,51 @@ export function segmentBox(a: Point,b: Point,box: Box): boolean {
 }
 export function lineClear(a: Point,b: Point,boxes: Box[],height=1.2): boolean { return !boxes.some(box=>box.h>=height && segmentBox(a,b,box)); }
 export function findPath(start: Point,end: Point,boxes: Box[]): Point[] {
-  const step=1, minX=-19,maxX=36,minZ=-35,maxZ=43;
-  const cell=(p:Point)=>({x:Math.round(p.x/step),z:Math.round(p.z/step)});
-  const s=cell(start),e=cell(end), key=(p:Point)=>`${p.x},${p.z}`;
-  const open=[s], cost=new Map([[key(s),0]]), from=new Map<string,Point>();
+  const minX=-19,maxX=36,minZ=-35,maxZ=43,gridRadius=.35;
+  const key=(p:Point)=>`${p.x},${p.z}`;
+  const inBounds=(p:Point)=>p.x>=minX&&p.x<=maxX&&p.z>=minZ&&p.z<=maxZ;
+  const free=(p:Point,radius:number)=>inBounds(p)&&!boxes.some(b=>overlaps(p.x,p.z,radius,b));
+  const clear=(a:Point,b:Point,radius:number)=>!boxes.some(box=>segmentBox(a,b,{...box,w:box.w+radius*2-1e-6,d:box.d+radius*2-1e-6}));
+  // A legal position beside a wall may round into the wall's occupied grid cell.
+  // Choose a nearby free cell connected to the real point, rather than treating
+  // a visible, reachable player as unreachable or snapping through a partition.
+  const endpoint=(point:Point,radius:number):Point|null=>{
+    if(!free(point,radius))return null;
+    const rounded={x:Math.round(point.x),z:Math.round(point.z)};
+    if(free(rounded,gridRadius)&&clear(point,rounded,radius))return rounded;
+    const candidates:Point[]=[];
+    for(let dx=-2;dx<=2;dx++)for(let dz=-2;dz<=2;dz++){
+      const candidate={x:rounded.x+dx,z:rounded.z+dz};
+      if(free(candidate,gridRadius)&&clear(point,candidate,radius))candidates.push(candidate);
+    }
+    candidates.sort((a,b)=>Math.hypot(a.x-point.x,a.z-point.z)-Math.hypot(b.x-point.x,b.z-point.z));
+    return candidates[0]??null;
+  };
+  const s=endpoint(start,.32),e=endpoint(end,.3);
+  if(!s||!e)return [];
+  const open=[s],cost=new Map([[key(s),0]]),from=new Map<string,Point>();
   const closed=new Set<string>();
   let iterations=0;
-  while(open.length && iterations++<4500){
+  while(open.length&&iterations++<4500){
     open.sort((a,b)=>(cost.get(key(a))!+Math.abs(a.x-e.x)+Math.abs(a.z-e.z))-(cost.get(key(b))!+Math.abs(b.x-e.x)+Math.abs(b.z-e.z)));
-    const c=open.shift()!,k=key(c); if(closed.has(k))continue; closed.add(k);
-    if(c.x===e.x&&c.z===e.z){const path:Point[]=[e];let cur=c;while(from.has(key(cur))){cur=from.get(key(cur))!;path.push(cur);}return path.reverse().slice(1);}
+    const c=open.shift()!,k=key(c);if(closed.has(k))continue;closed.add(k);
+    if(c.x===e.x&&c.z===e.z){
+      const path:Point[]=[e];let cur=c;
+      while(from.has(key(cur))){cur=from.get(key(cur))!;path.push(cur);}
+      path.reverse();
+      // Preserve smooth replanning between cells when the direct first step is
+      // safe; otherwise visit the resolved start cell before following the grid.
+      if(path.length>1&&clear(start,path[1],.32))path.shift();
+      else if(path.length===1&&Math.hypot(path[0].x-start.x,path[0].z-start.z)<.18)path.shift();
+      return path;
+    }
     for(const [dx,dz] of [[1,0],[-1,0],[0,1],[0,-1]]){
-      const n={x:c.x+dx,z:c.z+dz},nk=key(n);if(n.x<minX||n.x>maxX||n.z<minZ||n.z>maxZ||closed.has(nk)||boxes.some(b=>overlaps(n.x,n.z,.35,b)))continue;
-      const g=cost.get(k)!+1;if(g<(cost.get(nk)??Infinity)){cost.set(nk,g);from.set(nk,c);open.push(n);}
+      const n={x:c.x+dx,z:c.z+dz},nk=key(n);
+      // Thin partitions can lie between two free cells. Check the whole edge,
+      // not just its endpoints, so navigation cannot plan through those walls.
+      if(closed.has(nk)||!free(n,gridRadius)||!clear(c,n,gridRadius))continue;
+      const g=cost.get(k)!+1;
+      if(g<(cost.get(nk)??Infinity)){cost.set(nk,g);from.set(nk,c);open.push(n);}
     }
   }
   return [];
